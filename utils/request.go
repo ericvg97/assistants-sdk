@@ -8,10 +8,14 @@ import (
 )
 
 func DoRequest(requestURL string, requestBody interface{}, method string) *http.Response {
+	// fmt.Println(requestURL)
+
 	reqBody, err := json.Marshal(requestBody)
 	if err != nil {
 		panic(err)
 	}
+
+	// fmt.Println(string(reqBody))
 
 	if method == "GET" {
 		reqBody = nil
@@ -25,6 +29,9 @@ func DoRequest(requestURL string, requestBody interface{}, method string) *http.
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+openAISecretKey)
 	req.Header.Set("OpenAI-Beta", "assistants=v1")
+
+	// command, _ := http2curl.GetCurlCommand(req)
+	// fmt.Println(command)
 
 	client := &http.Client{}
 	resp, err := client.Do(req)

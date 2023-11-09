@@ -11,48 +11,38 @@ import (
 )
 
 const openaiApiUrl = "https://api.openai.com/v1"
+
 const createThreadSuffix = "/threads"
 const createMessageSuffix = "/threads/%v/messages"
 const runThreadSuffix = "/threads/%v/runs"
 const retrieveRunSuffix = "/threads/%v/runs/%v"
 const listMessagesSuffix = "/threads/%v/messages"
-const assistantID = "asst_tz3woggpuACf21pADXtnpLfh"
+const submitToolCallSuffix = "/threads/%v/runs/%v/submit_tool_outputs"
 
-type CreateThreadRespones struct {
+const assistantID = "asst_lzoRMNBdlkgFVutuaxDw7kVB"
+
+type Thread struct {
 	ID string `json:"id"`
 }
 
 func main() {
 	threadID := CreateThread()
-	// fmt.Println("ThreadID:", threadID)
 
 	scanner := bufio.NewScanner(os.Stdin)
 
 	for {
+		fmt.Printf("%s", ColorReset)
+
 		scanner.Scan()
 		message := scanner.Text()
-		done := make(chan bool)
-		go func() {
-			for {
-				for _, r := range `-\|/` {
-					select {
-					case <-done:
-						return
-					default:
-						fmt.Printf("\rClaudia Möller: %c", r)
-						time.Sleep(100 * time.Millisecond)
-					}
-				}
-			}
-		}()
+
+		fmt.Printf("%s", ColorGrey)
 
 		CreateMessage(message, threadID)
 		response := RunThread(threadID)
-		done <- true
 
-		fmt.Printf("\rClaudia Möller: %s\n", response)
+		fmt.Printf("%sClaudia Möller: %s%s\n", ColorBlue, response, ColorGrey)
 	}
-
 }
 
 func CreateThread() string {
@@ -60,13 +50,13 @@ func CreateThread() string {
 
 	resp := utils.DoRequest(requestURL, nil, "POST")
 
-	var createThreadResponse CreateThreadRespones
-	err := json.NewDecoder(resp.Body).Decode(&createThreadResponse)
+	var thread Thread
+	err := json.NewDecoder(resp.Body).Decode(&thread)
 	if err != nil {
 		panic(err)
 	}
 
-	return createThreadResponse.ID
+	return thread.ID
 }
 
 type CreateMessageRequest struct {
@@ -90,11 +80,6 @@ type RunThreadRequest struct {
 	AssistantID string `json:"assistant_id"`
 }
 
-type ThreadResponse struct {
-	ID     string `json:"id"`
-	Status string `json:"status"`
-}
-
 func RunThread(threadID string) string {
 	requestURL := fmt.Sprintf(openaiApiUrl+runThreadSuffix, threadID)
 	requestBody := RunThreadRequest{
@@ -102,37 +87,117 @@ func RunThread(threadID string) string {
 	}
 
 	resp := utils.DoRequest(requestURL, requestBody, "POST")
-	var runThreadResponse ThreadResponse
-	err := json.NewDecoder(resp.Body).Decode(&runThreadResponse)
+	var run Run
+	err := json.NewDecoder(resp.Body).Decode(&run)
 	if err != nil {
 		panic(err)
 	}
-
-	// fmt.Printf("Thread '%v' is running on %v with status %v", threadID, runThreadResponse.ID, runThreadResponse.Status)
-	PollRun(threadID, runThreadResponse.ID)
-	return GetLastMessage(threadID)
+	// fmt.Printf("Thread '%v' is running on %v with status %v", threadID, run.ID, run.Status)
+	return PollRun(threadID, run.ID)
 }
 
-func PollRun(threadID, runID string) {
+func PollRun(threadID, runID string) string {
+	run := Run{}
+
 	reqURL := fmt.Sprintf(openaiApiUrl+retrieveRunSuffix, threadID, runID)
 
 	status := "queued"
 	for status == "queued" || status == "in_progress" {
-		// fmt.Println("Sleeping as status is", status)
-		time.Sleep(1 * time.Second)
+		fmt.Println("Sleeping as status is", status)
+		time.Sleep(2 * time.Second)
 
 		resp := utils.DoRequest(reqURL, nil, "GET")
 
-		var threadResponse ThreadResponse
-		err := json.NewDecoder(resp.Body).Decode(&threadResponse)
+		err := json.NewDecoder(resp.Body).Decode(&run)
 		if err != nil {
 			panic(err)
 		}
 
-		status = threadResponse.Status
+		status = run.Status
 	}
 
-	// fmt.Printf("Thread finished with status %v \n", status)
+	fmt.Printf("Thread finished with status %v \n", status)
+
+	if run.Status == "completed" {
+		return GetLastMessage(threadID)
+	} else if run.Status == "requires_action" {
+		return HandleAction(run, threadID)
+	}
+
+	panic("Thread finished with status " + run.Status)
+}
+
+func HandleAction(run Run, threadID string) string {
+	action := run.RequiredAction
+	if action.Type != "submit_tool_outputs" {
+		panic("Action type not supported: " + action.Type)
+	}
+
+	if len(action.SubmitToolOutputs.ToolCalls) > 1 {
+		panic("Multiple tool calls not supported")
+	}
+
+	toolCall := action.SubmitToolOutputs.ToolCalls[0]
+	if toolCall.Type != "function" {
+		panic("Tool call type not supported: " + toolCall.Type)
+	}
+
+	function := toolCall.Function
+	if function.Name != "scheduleNewPickup" {
+		panic("Function name not supported: " + function.Name)
+	}
+
+	var arguments map[string]string
+
+	err := json.Unmarshal([]byte(function.Arguments), &arguments)
+	if err != nil {
+		panic("Could not unmarshal arguments")
+	}
+
+	response := scheduleNewPickup(arguments["time"])
+	responseJSON, err := json.Marshal(response)
+	if err != nil {
+		panic("Could not marshal response")
+	}
+
+	SubmitToolCall(threadID, run.ID, toolCall.ID, string(responseJSON))
+	return PollRun(threadID, run.ID)
+}
+
+type SubmitToolCallRequest struct {
+	ToolOutputs []ToolOutput `json:"tool_outputs"`
+}
+
+type ToolOutput struct {
+	ToolCallID string `json:"tool_call_id"`
+	Output     string `json:"output"`
+}
+
+func SubmitToolCall(threadID, runID, toolCallID, outputJSON string) {
+	requestURL := fmt.Sprintf(openaiApiUrl+submitToolCallSuffix, threadID, runID)
+	requestBody := SubmitToolCallRequest{
+		ToolOutputs: []ToolOutput{
+			{
+				ToolCallID: toolCallID,
+				Output:     outputJSON,
+			},
+		},
+	}
+
+	utils.DoRequest(requestURL, requestBody, "POST")
+}
+
+func scheduleNewPickup(time string) PickupResponse {
+	fmt.Printf("%sAuthenticated call to schedule pickup: %s%s\n", ColorRed, time, ColorGrey)
+	return PickupResponse{
+		HttpCode: 200,
+		Message:  "Pickup scheduled",
+	}
+}
+
+type PickupResponse struct {
+	HttpCode int    `json:"http_code"`
+	Message  string `json:"message"`
 }
 
 type Messages struct {
@@ -164,3 +229,38 @@ func GetLastMessage(threadID string) string {
 
 	return messages.Messages[0].Content[0].Text.Value
 }
+
+type Run struct {
+	ID             string         `json:"id"`
+	Status         string         `json:"status"`
+	RequiredAction RequiredAction `json:"required_action"`
+}
+
+type RequiredAction struct {
+	Type              string            `json:"type"`
+	SubmitToolOutputs SubmitToolOutputs `json:"submit_tool_outputs"`
+}
+
+type SubmitToolOutputs struct {
+	ToolCalls []ToolCall `json:"tool_calls"`
+}
+
+type ToolCall struct {
+	ID       string   `json:"id"`
+	Type     string   `json:"type"`
+	Function Function `json:"function"`
+}
+
+type Function struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+const (
+	ColorRed    = "\033[31m"
+	ColorGreen  = "\033[32m"
+	ColorYellow = "\033[33m"
+	ColorBlue   = "\033[34m"
+	ColorReset  = "\033[0m"
+	ColorGrey   = "\033[90m"
+)
