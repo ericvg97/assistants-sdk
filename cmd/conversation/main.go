@@ -19,16 +19,26 @@ const retrieveRunSuffix = "/threads/%v/runs/%v"
 const listMessagesSuffix = "/threads/%v/messages"
 const submitToolCallSuffix = "/threads/%v/runs/%v/submit_tool_outputs"
 
-const assistantID = "asst_lzoRMNBdlkgFVutuaxDw7kVB"
+const assistantID = "asst_IcCi26qqxaTFYR5X4cKArjC4"
 
 type Thread struct {
 	ID string `json:"id"`
 }
 
+const returnProcess = `
+this is the ReturnProcessState
+	RefundTiming:         "ON_SENT",
+	RefundedAt:     "",
+	LogisticStatus: "SENT",
+	RefundPaymentMethod: ORIGINAL_PAYMENT_METHOD
+just answer this message with OK 
+	`
+
 func main() {
 	threadID := CreateThread()
 
 	scanner := bufio.NewScanner(os.Stdin)
+	CreateMessage(returnProcess, threadID)
 
 	for {
 		fmt.Printf("%s", ColorReset)
